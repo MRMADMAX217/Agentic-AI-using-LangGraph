@@ -1,5 +1,5 @@
 import streamlit as st
-from langgraph_backend import chatbot
+from langgraph_database_backend import chatbot, llm 
 from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 
@@ -20,19 +20,33 @@ def generate_thread_id():
 #     return title
 from langchain_core.messages import HumanMessage
 
-def generate_thread_title(thread_id):
+from langchain_core.messages import HumanMessage
+import streamlit as st # Ensure st is imported
+
+@st.cache_data(show_spinner=False)
+def generate_thread_title(thread_id, conversation_len):
     conversation = load_conversation(thread_id)
-    conversation_text = "\n".join([msg.content for msg in conversation])
-    CONFIG = {'configurable': {'thread_id':"thread-1"}}
-    response = chatbot.invoke(
-        {"messages": [HumanMessage(content=conversation_text + "\nGenerate a title by analysing the conversation and just return me the title only")]},config=CONFIG
-    )
-    messages = response.get("messages", [])
-    if messages:
-        title = messages[-1].content
+    
+    if not conversation:
+        return "New Chat..."
+        
+    # Use only the first three turns for a title prompt
+    conversation_text = "\n".join([msg.content for msg in conversation[:3]]) 
+    
+    title_prompt = "Generate a concise title (5 words max) for the following conversation and just return the title only:\n\n" + conversation_text
+    
+    # 💥 CHANGE: Use the direct LLM invoke instead of the full 'chatbot'
+    response = llm.invoke([HumanMessage(content=title_prompt)]) 
+    
+    if response:
+        # response is a BaseMessage, access content
+        title = response.content.strip(' "') 
     else:
-        title = "Untitled"
+        title = "Untitled Conversation"
+        
     return title
+
+
 
 def reset_chat():
     thread_id = generate_thread_id()
@@ -52,20 +66,35 @@ def load_conversation(thread_id):
 
 
 # **************************************** Session Setup ******************************
-if 'message_history' not in st.session_state:
-    st.session_state['message_history'] = []
+# if 'message_history' not in st.session_state:
+#     st.session_state['message_history'] = []
 
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = generate_thread_id()
+# if 'thread_id' not in st.session_state:
+#     st.session_state['thread_id'] = generate_thread_id()
 
+# if 'chat_threads' not in st.session_state:
+#     st.session_state['chat_threads'] = []
+
+# if 'thread_title' not in st.session_state:
+#     st.session_state['thread_title'] = generate_thread_title(st.session_state['thread_id'])
+#     add_thread(st.session_state['thread_id'])
+# **************************************** Session Setup ******************************
 if 'chat_threads' not in st.session_state:
     st.session_state['chat_threads'] = []
 
+if 'thread_id' not in st.session_state:
+    # Generate a new ID for the very first session
+    new_thread_id = generate_thread_id()
+    st.session_state['thread_id'] = new_thread_id
+    # Add this initial thread to the list
+    add_thread(new_thread_id) 
+
+if 'message_history' not in st.session_state:
+    st.session_state['message_history'] = []
+
+# 'thread_title' state is fine, it will be regenerated in the sidebar as needed
 if 'thread_title' not in st.session_state:
-    st.session_state['thread_title'] = generate_thread_title(st.session_state['thread_id'])
-
-add_thread(st.session_state['thread_id'])
-
+    st.session_state['thread_title'] = "New Chat" # Use a placeholder title
 
 # **************************************** Sidebar UI *********************************
 
@@ -77,7 +106,10 @@ if st.sidebar.button('New Chat'):
 st.sidebar.header('My Conversations')
 
 for thread_id in st.session_state['chat_threads'][::-1]:
-    thread_title = generate_thread_title(thread_id)  # generate title for this specific thread
+    # Get the length of the conversation to invalidate the cache only when the chat grows
+    current_conversation = load_conversation(thread_id)
+    conversation_len = len(current_conversation)
+    thread_title = generate_thread_title(thread_id, conversation_len) # Pass the length
     if st.sidebar.button(label=str(thread_title), key=f"thread_button_{thread_id}"):
         st.session_state['thread_id'] = thread_id
         messages = load_conversation(thread_id)
@@ -110,7 +142,12 @@ if user_input:
     with st.chat_message('user'):
         st.text(user_input)
 
-    CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
+    
+    CONFIG = {
+        'configurable': {'thread_id': st.session_state['thread_id']},
+        # 💡 Add the thread ID to top-level metadata for explicit LangSmith grouping
+        'metadata': {'thread_id': str(st.session_state['thread_id'])} 
+        }
 
      # first add the message to message_history
     with st.chat_message("assistant"):
